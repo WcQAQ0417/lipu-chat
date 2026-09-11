@@ -1,6 +1,6 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Socket } from 'socket.io-client';
-import { ChatMessage, connectSocket, ensureSession, Persona, request, Room } from './api';
+import { ChatMessage, connectSocket, ensureSession, Persona, request, Room, uuid } from './api';
 
 type View = 'LOBBY' | 'PERSONAS' | 'CHAT';
 type Mission = { publicId: string; text: string; status: string; type: 'CONFLICT' | 'COMEDY' | 'COOPERATIVE'; rewardPoints: number; isNew: boolean };
@@ -140,7 +140,7 @@ function Chat({ room, persona, personas, messages, memberId, socket, chaos, miss
     const originalText = input.trim(); if (!originalText || busy) return;
     setBusy(true);
     try {
-      await emitAck(socket, 'message:transform', { originalText, clientMessageId: crypto.randomUUID() });
+      await emitAck(socket, 'message:transform', { originalText, clientMessageId: uuid() });
       setInput('');
     } catch (err) { onError(err instanceof Error ? err.message : '发送失败'); } finally { setBusy(false); }
   }
