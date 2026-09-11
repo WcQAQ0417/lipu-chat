@@ -33,7 +33,7 @@ if (!committed.ok || !broadcast.publicId) throw new Error('提交或广播失败
 
 const rulePromise = new Promise((resolve, reject) => {
   const timeout = setTimeout(() => reject(new Error('失控指数未触发临时规则')), 20_000);
-  socket.once('chaos:rule_triggered', value => { clearTimeout(timeout); resolve(value); });
+  socket.once('chaos:rules', value => { clearTimeout(timeout); resolve(value); });
 });
 for (let index = 0; index < 8; index++) {
   const preview = await ack(socket, 'message:transform', { originalText: `第${index + 2}次让房间继续失控`, clientMessageId: crypto.randomUUID() });
