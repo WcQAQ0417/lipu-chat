@@ -6,6 +6,7 @@ import { Server, Socket } from 'socket.io';
 import { AuthService } from './auth.service';
 import { DbService } from './db.service';
 import { GameService } from './game.service';
+import type { ActiveRule } from './game.service';
 import { LlmService } from './llm.service';
 import type { PersonaLike } from './llm.service';
 import { PersonaService } from './persona.service';
@@ -60,9 +61,10 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       await this.redis.client.expire(`room:${room.id}:member:${joined.memberId}:sockets`, 600);
       const mission = room.room_type === 'THEME' ? await this.game.assignMission(Number(room.id), joined.memberId) : null;
       const chaos = await this.game.currentChaos(Number(room.id));
+      const leaderboard = await this.game.leaderboard(Number(room.id));
       const messages = await this.loadMessages(Number(room.id));
       client.to(`room:${room.id}`).emit('member:joined', { memberId: joined.memberId, nickname: data.nickname, personaName: joined.persona.name });
-      return { ok: true, room: { code: room.room_code, name: room.name, type: room.room_type }, memberId: joined.memberId, mission, chaos, messages };
+      return { ok: true, room: { code: room.room_code, name: room.name, type: room.room_type }, memberId: joined.memberId, mission, chaos, leaderboard, messages };
     } catch (error: any) { throw new WsException(error?.message || '加入房间失败'); }
   }
 
@@ -83,55 +85,47 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const data = this.requireRoom(client);
     const original = String(body.originalText || '').trim();
     if (!original || original.length > 500) throw new WsException('消息长度应为 1～500 字');
+    const idemKey = `idem:message:${data.uid}:${body.clientMessageId}`;
+    const existing = await this.redis.client.get(idemKey);
+    if (existing) return { ok: true, duplicate: true, message: JSON.parse(existing) };
     const memberRows = await this.db.rows<RowDataPacket[]>(
       `SELECT p.*,rm.id member_id FROM room_members rm JOIN personas p ON p.id=rm.current_persona_id
        WHERE rm.id=? AND rm.user_id=? AND rm.member_status='JOINED' LIMIT 1`, [data.memberId, data.uid],
     );
     if (!memberRows.length || !memberRows[0].enabled) throw new WsException('当前人物不可用，请切换人物');
     const persona = memberRows[0];
-    const transformedText = await this.llm.transform(original, persona as PersonaLike);
-    const draftId = randomUUID();
-    await this.redis.client.set(`draft:${draftId}`, JSON.stringify({
-      uid: data.uid, roomId: data.roomId, memberId: data.memberId, clientMessageId: body.clientMessageId,
-      originalText: original, transformedText, personaId: persona.id, personaPublicId: persona.public_id,
-      personaVersion: persona.version, personaSnapshot: this.personas.map(persona), createdAt: Date.now(),
-    }), { EX: 120 });
-    return { ok: true, draftId, transformedText, autoSendAfterMs: 3000, persona: { publicId: persona.public_id, name: persona.name, visual: this.parse(persona.visual_config) } };
-  }
+    const chaos = await this.game.currentChaos(data.roomId!);
+    const ruleText = chaos.activeRules.map(rule => rule.rule).join('；');
+    const transformedText = (await this.llm.transform(original, persona as PersonaLike, '', ruleText)).slice(0, 1500);
 
-  @SubscribeMessage('message:commit')
-  async commit(@ConnectedSocket() client: Socket, @MessageBody() body: { draftId: string; editedText?: string }) {
-    const data = this.requireRoom(client);
-    const raw = await this.redis.client.getDel(`draft:${body.draftId}`);
-    if (!raw) throw new WsException('预览已过期或已经发送');
-    const draft = JSON.parse(raw);
-    if (draft.uid !== data.uid || draft.roomId !== data.roomId) throw new WsException('无权提交此预览');
-    const text = String(body.editedText || draft.transformedText).trim().slice(0, 1500);
-    const idemKey = `idem:message:${data.uid}:${draft.clientMessageId}`;
-    const existing = await this.redis.client.get(idemKey);
-    if (existing) return { ok: true, duplicate: true, message: JSON.parse(existing) };
     const sequenceNo = await this.redis.client.incr(`room:${data.roomId}:seq`);
     const publicId = randomUUID().replace(/-/g, '').slice(0, 26).toUpperCase();
+    const snapshot = this.personas.map(persona);
     await this.db.pool.execute<ResultSetHeader>(
       `INSERT INTO messages(public_id,client_message_id,room_id,room_member_id,user_id,persona_id,persona_version,
        persona_snapshot,original_text,transformed_text,content_format,transform_status,sequence_no)
        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      [publicId, draft.clientMessageId, data.roomId, data.memberId, data.uid, draft.personaId, draft.personaVersion,
-       JSON.stringify(draft.personaSnapshot), draft.originalText, text, this.detectFormat(text), 'SUCCEEDED', sequenceNo],
+      [publicId, body.clientMessageId, data.roomId, data.memberId, data.uid, persona.id, persona.version,
+       JSON.stringify(snapshot), original, transformedText, this.detectFormat(transformedText), 'SUCCEEDED', sequenceNo],
     );
-    const message = { publicId, sequenceNo, sender: { memberId: data.memberId, nickname: data.nickname }, persona: draft.personaSnapshot, text, createdAt: new Date().toISOString() };
+    const message = { publicId, sequenceNo, sender: { memberId: data.memberId, nickname: data.nickname }, persona: snapshot, text: transformedText, createdAt: new Date().toISOString() };
     await this.redis.client.set(idemKey, JSON.stringify(message), { EX: 600 });
     this.server.to(`room:${data.roomId}`).emit('message:ready', message);
-    const chaos = await this.game.addChaos(data.roomId!, 12 + Math.min(8, Math.floor(text.length / 40)));
-    this.broadcastChaos(data.roomId!, chaos);
+    const chaosAfter = await this.game.addChaos(data.roomId!, 12 + Math.min(8, Math.floor(transformedText.length / 40)));
+    this.broadcastChaos(data.roomId!, chaosAfter);
     return { ok: true, message };
   }
 
-  @SubscribeMessage('message:cancel')
-  async cancel(@ConnectedSocket() client: Socket, @MessageBody() body: { draftId: string }) {
-    this.requireRoom(client);
-    await this.redis.client.del(`draft:${body.draftId}`);
-    return { ok: true };
+  @SubscribeMessage('mission:claim')
+  async claimMission(@ConnectedSocket() client: Socket, @MessageBody() body: { missionPublicId: string }) {
+    const data = this.requireRoom(client);
+    const result = await this.game.claimMission(data.roomId!, data.memberId!, body.missionPublicId);
+    if (result.verdict === 'YES') {
+      this.server.to(`room:${data.roomId}`).emit('score:leaderboard', result.leaderboard);
+      if (result.chaos) this.broadcastChaos(data.roomId!, result.chaos);
+      if (result.failedOpponent) this.server.to(`room:${data.roomId}`).emit('mission:failed', { memberId: result.failedOpponent });
+    }
+    return result;
   }
 
   private requireRoom(client: Socket) {
@@ -149,9 +143,9 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     return rows.reverse().map(row => ({ publicId: row.public_id, sequenceNo: Number(row.sequence_no), sender: { memberId: row.member_public_id, nickname: row.nickname }, persona: this.parse(row.persona_snapshot), text: row.transformed_text, createdAt: row.created_at }));
   }
 
-  private broadcastChaos(roomId: number, chaos: { value: number; triggered: boolean; rule?: string; endsAt?: number }) {
+  private broadcastChaos(roomId: number, chaos: { value: number; activeRules: ActiveRule[] }) {
     this.server.to(`room:${roomId}`).emit('chaos:updated', { value: chaos.value });
-    if (chaos.triggered) this.server.to(`room:${roomId}`).emit('chaos:rule_triggered', { rule: chaos.rule, endsAt: chaos.endsAt });
+    this.server.to(`room:${roomId}`).emit('chaos:rules', chaos.activeRules);
   }
 
   private detectFormat(text: string) { return /(^|\n)(const |let |for \(|if \(|try \{|function )/.test(text) ? 'CODE' : 'PLAIN'; }
