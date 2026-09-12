@@ -113,6 +113,22 @@ export class EffectsController {
         resultUrl = await this.tokendance.generateImage(prompt);
       }
 
+      // 下载 seedream 返回的图片到本地（避免过期 / CORS 问题）
+      const uploadDir = join(process.cwd(), 'uploads', 'effects');
+      if (!existsSync(uploadDir)) mkdirSync(uploadDir, { recursive: true });
+      const localFile = `${logId}_result.jpg`;
+      const localPath = join(uploadDir, localFile);
+      try {
+        const imgRes = await fetch(resultUrl);
+        if (imgRes.ok) {
+          const buf = await imgRes.arrayBuffer();
+          writeFileSync(localPath, Buffer.from(buf));
+          resultUrl = `/uploads/effects/${localFile}`;
+        }
+      } catch {
+        // 下载失败就保持原 URL
+      }
+
       await this.db.pool.execute(
         `UPDATE effect_logs SET result_image_url=?,status='SUCCEEDED' WHERE public_id=?`,
         [resultUrl, logId]
@@ -124,6 +140,47 @@ export class EffectsController {
         `UPDATE effect_logs SET status='FAILED',error_message=? WHERE public_id=?`,
         [err.message?.slice(0, 500) || 'unknown error', logId]
       );
+      throw err;
+    }
+  }
+
+  @Post('generate-video')
+  async generateVideo(
+    @Headers('authorization') token: string,
+    @Body() body: { effect_id: string; image_url: string },
+  ) {
+    const user = this.auth.verify(token);
+
+    const effects = await this.db.rows<RowDataPacket[]>(
+      'SELECT * FROM effects WHERE public_id=? AND enabled=1', [body.effect_id]
+    );
+    if (!effects.length) throw new Error('特效不存在');
+    const effect = effects[0] as RowDataPacket & { name: string; prompt_template: string };
+
+    const prompt = `${effect.prompt_template}\n\n风格：动漫风格，高质量，细节丰富，明亮色彩。`;
+
+    // 寻找最近的 effect_log 以关联视频
+    const logs = await this.db.rows<RowDataPacket[]>(
+      `SELECT id FROM effect_logs WHERE effect_id=? AND user_id=? AND status='SUCCEEDED'
+       ORDER BY created_at DESC LIMIT 1`,
+      [effect.id, user.uid]
+    );
+
+    try {
+      const videoUrl = await this.tokendance.generateVideo(body.image_url, prompt);
+      if (logs.length) {
+        await this.db.pool.execute(
+          'UPDATE effect_logs SET video_url=? WHERE id=?', [videoUrl, logs[0].id]
+        );
+      }
+      return { ok: true, video_url: videoUrl };
+    } catch (err: any) {
+      if (logs.length) {
+        await this.db.pool.execute(
+          'UPDATE effect_logs SET status=?, error_message=? WHERE id=?',
+          ['FAILED', (err.message || '').slice(0, 500), logs[0].id]
+        );
+      }
       throw err;
     }
   }

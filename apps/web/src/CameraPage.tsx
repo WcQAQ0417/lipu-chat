@@ -134,8 +134,8 @@ export function CameraPage({ onBack }: { onBack: () => void }) {
   const [adding, setAdding] = useState(false);
   const [originalFrame, setOriginalFrame] = useState<string | null>(null);
   const [generatingVideo, setGeneratingVideo] = useState(false);
-  const [previewAnimating, setPreviewAnimating] = useState(false);
   const [videoBlobUrl, setVideoBlobUrl] = useState<string | null>(null);
+  const effectImgRef = useRef<HTMLImageElement | null>(null);
 
   useEffect(() => {
     const unlocked = Object.values(counts).some(c => c >= 5);
@@ -217,7 +217,6 @@ export function CameraPage({ onBack }: { onBack: () => void }) {
     if (!frame) { setError('拍照失败'); return; }
     setError('');
     setVideoBlobUrl(null);
-    setPreviewAnimating(false);
     setOriginalFrame(frame);
     setLoading(true);
     setPreview(null);
@@ -283,7 +282,6 @@ export function CameraPage({ onBack }: { onBack: () => void }) {
     setError('');
     setLoading(false);
     setVideoBlobUrl(null);
-    setPreviewAnimating(false);
     startCamera();
   }, [startCamera]);
 
@@ -293,89 +291,106 @@ export function CameraPage({ onBack }: { onBack: () => void }) {
     setSurpriseUnlocked(false);
   }, []);
 
-  // CSS 动画预览：替代 video 播放，即时渲染无编码延迟
-  const playPreviewAnimation = useCallback(() => {
-    setPreviewAnimating(true);
-    setTimeout(() => setPreviewAnimating(false), 3100);
-  }, []);
-
-  // 生成变身视频
+  // 生成变身视频（客户端 canvas 过渡动画：原图 → 特效图）
   const generateVideo = useCallback(async () => {
-    if (!originalFrame || !preview) return;
+    if (!preview || !originalFrame) return;
     setGeneratingVideo(true);
-    // 先显示 CSS 动画预览，视频编码在后台进行
-    playPreviewAnimation();
+    setError('');
     try {
-      // 预绘制所有帧到临时 canvas
-      const frameCanvases: HTMLCanvasElement[] = [];
-      // 预先加载两张图片
-      const loadImages = async () => {
-        const i1 = await loadImage(originalFrame);
-        const i2 = await loadImage(preview);
-        return [i1, i2] as const;
-      };
-      const [img1, img2] = await loadImages();
-      const W = img1.width, H = img1.height;
-      const FPS = 24, DURATION = 3;
-      const totalFrames = FPS * DURATION;
-      const FRAME_MS = Math.round(1000 / FPS);
+      const [origImg, effImg] = await Promise.all([
+        loadImage(originalFrame),
+        loadImage(preview),
+      ]);
 
-      for (let f = 0; f < totalFrames; f++) {
-        const t = f / totalFrames;
-        const c = document.createElement('canvas');
-        c.width = W; c.height = H;
-        const cx = c.getContext('2d')!;
-        const scale = 1 + t * 0.1;
-        const midX = W / 2, midY = H / 2;
-        cx.clearRect(0, 0, W, H);
-        cx.globalAlpha = 1 - t;
-        cx.drawImage(img1, 0, 0, W, H);
-        cx.globalAlpha = t;
-        cx.save();
-        cx.translate(midX, midY);
-        cx.scale(scale, scale);
-        cx.translate(-midX, -midY);
-        cx.drawImage(img2, 0, 0, W, H);
-        cx.restore();
-        cx.globalAlpha = 1;
-        frameCanvases.push(c);
-      }
+      // Canvas 宽高比与原始照片一致（contain 模式，完整显示人像）
+      const W = 640;
+      const origAspect = origImg.width / origImg.height;
+      const H = Math.round(W / origAspect);
+      const canvas = document.createElement('canvas');
+      canvas.width = W;
+      canvas.height = H;
+      const ctx = canvas.getContext('2d')!;
 
-      // 用 captureStream + MediaRecorder 逐帧重放合成视频
-      const renderCanvas = document.createElement('canvas');
-      renderCanvas.width = W; renderCanvas.height = H;
-      renderCanvas.style.display = 'none'; // 隐藏，但要挂到 DOM 上 captureStream 才能工作
-      document.body.appendChild(renderCanvas);
-      const rctx = renderCanvas.getContext('2d')!;
-      const stream = renderCanvas.captureStream(FPS);
-      const recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp8' });
+      const stream = canvas.captureStream(30);
       const chunks: Blob[] = [];
+      const recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp8' });
       recorder.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
-      const done = new Promise<void>(resolve => { recorder.onstop = () => resolve(); });
+
+      const fps = 30;
+      const duration = 3;
+      const totalFrames = fps * duration;
+      let frame = 0;
 
       recorder.start();
-      for (let f = 0; f < totalFrames; f++) {
-        rctx.clearRect(0, 0, W, H);
-        rctx.drawImage(frameCanvases[f], 0, 0);
-        await new Promise(r => setTimeout(r, FRAME_MS - 4));
-      }
-      recorder.stop();
-      await done;
+
+      await new Promise<void>(resolve => {
+        recorder.onstop = () => resolve();
+
+        // 居中绘制图片，contain 模式（完整显示，自动黑边填充）
+        function drawImg(img: HTMLImageElement, alpha = 1, scale = 1) {
+          const iw = img.width, ih = img.height;
+          const imgRatio = iw / ih;
+          const canvasRatio = W / H;
+
+          let dw: number, dh: number;
+          if (imgRatio > canvasRatio) {
+            // 图片更宽 → 按高度撑满，左右留黑边
+            dh = H * scale;
+            dw = dh * imgRatio;
+          } else {
+            // 图片更高 → 按宽度撑满，上下留黑边
+            dw = W * scale;
+            dh = dw / imgRatio;
+          }
+
+          const dx = (W - dw) / 2;
+          const dy = (H - dh) / 2;
+
+          ctx.save();
+          ctx.globalAlpha = alpha;
+          ctx.drawImage(img, 0, 0, iw, ih, dx, dy, dw, dh);
+          ctx.restore();
+        }
+
+        function tick() {
+          const t = frame / totalFrames;
+
+          // 黑底（letterboxing 背景）
+          ctx.fillStyle = '#000';
+          ctx.fillRect(0, 0, W, H);
+
+          if (t < 0.2) {
+            // Phase 1: 原图亮相（0-0.6s）
+            drawImg(origImg, 1, 1 + t * 0.03);
+          } else if (t < 0.6) {
+            // Phase 2: 交叉淡入淡出（0.6s-1.8s）
+            const fade = (t - 0.2) / 0.4;
+            drawImg(origImg, 1 - fade, 1.03);
+            drawImg(effImg, fade, 1.03);
+          } else {
+            // Phase 3: 特效图弹跳亮相（1.8s-3s）
+            const showT = (t - 0.6) / 0.4;
+            const bounce = 1 - 0.06 * Math.sin(showT * Math.PI) * (1 - showT);
+            drawImg(effImg, 1, bounce);
+          }
+
+          frame++;
+          if (frame < totalFrames) {
+            setTimeout(tick, 1000 / fps);
+          } else {
+            recorder.stop();
+          }
+        }
+        tick();
+      });
 
       const blob = new Blob(chunks, { type: 'video/webm' });
-      if (chunks.length === 0 || blob.size === 0) {
-        throw new Error('视频数据为空');
-      }
-      // 保存下载用 URL（预览已用 CSS 动画替代）
       setVideoBlobUrl(URL.createObjectURL(blob));
-      // 清理临时 canvas
-      frameCanvases.forEach(c => c.parentNode?.removeChild(c));
-      if (renderCanvas.parentNode) renderCanvas.parentNode.removeChild(renderCanvas);
     } catch (e: any) {
       setError('视频生成失败: ' + (e?.message || ''));
     }
     setGeneratingVideo(false);
-  }, [originalFrame, preview]);
+  }, [preview, originalFrame]);
 
   function loadImage(src: string): Promise<HTMLImageElement> {
     return new Promise((resolve, reject) => {
@@ -391,16 +406,14 @@ export function CameraPage({ onBack }: { onBack: () => void }) {
     const a = document.createElement('a');
     a.href = videoBlobUrl;
     const eff = effects.find(e => e.id === selected);
-    a.download = `变身视频_${eff?.name || 'video'}_${Date.now()}.webm`;
+    a.download = `变身视频_${eff?.name || 'video'}_${Date.now()}.mp4`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
   }, [videoBlobUrl, selected, effects]);
 
   const selectedEffect = effects.find(e => e.id === selected);
-
   const selectedCount = selected ? (counts[selected] || 0) : 0;
-
   const currentFilter = cssFilter(filterType, filterParams);
 
   // 创建自定义特效
@@ -444,7 +457,7 @@ export function CameraPage({ onBack }: { onBack: () => void }) {
       <header className="top">
         <div className="brand"><i>📷</i>拍照变身</div>
         <div style={{ display: 'flex', gap: 8 }}>
-          {preview && <button className="link-btn" onClick={resetCamera}>← 重拍</button>}
+                  {preview && <button className="link-btn" onClick={resetCamera}>← 重拍</button>}
           <button className="link-btn" onClick={() => { stopStream(); onBack(); }}>← 返回</button>
         </div>
       </header>
@@ -478,15 +491,8 @@ export function CameraPage({ onBack }: { onBack: () => void }) {
               <img src={preview} alt="preview"
                 style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }}
               />
-              {/* CSS 动画覆盖层 */}
-              {previewAnimating && originalFrame && (
-                <img src={originalFrame} alt="原图"
-                  style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'contain',
-                    animation: 'previewFadeOut 3s ease-in-out forwards' }}
-                />
-              )}
-              {/* 编码中提示（不要挡动画） */}
-              {generatingVideo && !previewAnimating && (
+              {/* 编码中提示 */}
+              {generatingVideo && (
                 <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
                   background: 'rgba(0,0,0,0.4)' }}>
                   <div style={{ textAlign: 'center' }}>
@@ -574,7 +580,7 @@ export function CameraPage({ onBack }: { onBack: () => void }) {
         )}
         {error && <p style={{ textAlign: 'center', marginTop: 8, fontSize: 13, color: 'var(--orange)' }}>{error}</p>}
 
-        {/* 拍照按钮区域 */}
+        {/* 拍照按钮区域 + 直接录制 */}
         {!preview && !loading && cameraReady && (
           <div style={{ display: 'flex', justifyContent: 'center', gap: 12, marginTop: 12, alignItems: 'center', flexWrap: 'wrap' }}>
             <button className="solid-btn wide" onClick={takePhoto}
@@ -606,7 +612,7 @@ export function CameraPage({ onBack }: { onBack: () => void }) {
         )}
 
         {/* 有预览时显示保存+重拍+生成视频 */}
-        {preview && !previewAnimating && !generatingVideo && (
+        {preview && !generatingVideo && (
           <div style={{ display: 'flex', justifyContent: 'center', gap: 12, marginTop: 12, flexWrap: 'wrap' }}>
             <button className="solid-btn" onClick={saveImage} style={{ fontSize: 16, padding: '12px 28px' }}>
               保存图片
@@ -620,17 +626,29 @@ export function CameraPage({ onBack }: { onBack: () => void }) {
             </button>
           </div>
         )}
-        {/* 视频已生成/动画播放中 */}
-        {(videoBlobUrl || previewAnimating) && (
+        {/* 视频已生成 */}
+        {videoBlobUrl && (
+          <>
+          <div style={{ marginTop: 10, textAlign: 'center' }}>
+            <video src={videoBlobUrl} controls autoPlay loop
+              style={{ maxWidth: '100%', maxHeight: 320, border: '4px solid var(--ink)', boxShadow: '4px 4px 0 var(--ink)' }}
+            />
+          </div>
           <div style={{ display: 'flex', justifyContent: 'center', gap: 12, marginTop: 12, flexWrap: 'wrap' }}>
-            {videoBlobUrl && (
-              <button className="solid-btn" onClick={saveVideo} style={{ fontSize: 16, padding: '12px 28px' }}>
-                保存视频
-              </button>
-            )}
-            <button className="link-btn" onClick={() => { setVideoBlobUrl(null); setPreviewAnimating(false); setPreview(preview); }} style={{ fontSize: 16, padding: '12px 28px' }}>
+            <button className="solid-btn" onClick={saveVideo} style={{ fontSize: 16, padding: '12px 28px' }}>
+              保存视频
+            </button>
+            <button className="link-btn" onClick={() => { setVideoBlobUrl(null); }} style={{ fontSize: 16, padding: '12px 28px' }}>
               重新生成
             </button>
+          </div>
+          </>
+        )}
+        {/* 视频生成中动画 */}
+        {generatingVideo && !videoBlobUrl && (
+          <div style={{ textAlign: 'center', marginTop: 12 }}>
+            <div style={{ width: 40, height: 40, border: '4px solid var(--lime)', borderTopColor: 'transparent', borderRadius: '50%', margin: '0 auto 8px', animation: 'spin 0.8s linear infinite' }} />
+            <span style={{ fontSize: 14, color: '#555' }}>变身视频生成中...</span>
           </div>
         )}
 
