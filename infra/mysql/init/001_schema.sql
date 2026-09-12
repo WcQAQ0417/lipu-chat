@@ -160,3 +160,40 @@ CREATE TABLE IF NOT EXISTS messages (
   CONSTRAINT fk_messages_persona FOREIGN KEY (persona_id) REFERENCES personas(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
+CREATE TABLE IF NOT EXISTS effects (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  public_id CHAR(26) NOT NULL,
+  name VARCHAR(40) NOT NULL,
+  description VARCHAR(200) NULL,
+  prompt_template TEXT NOT NULL,
+  image_url VARCHAR(512) NULL,
+  model VARCHAR(80) NOT NULL DEFAULT 'seedream-5.0-lite',
+  effect_type ENUM('IMAGE', 'VIDEO') NOT NULL DEFAULT 'IMAGE',
+  config JSON NULL,
+  enabled TINYINT(1) NOT NULL DEFAULT 1,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_effects_public_id (public_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE IF NOT EXISTS effect_logs (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  public_id CHAR(26) NOT NULL,
+  effect_id BIGINT UNSIGNED NOT NULL,
+  user_id BIGINT UNSIGNED NULL,
+  original_image_url VARCHAR(1024) NOT NULL,
+  original_analysis TEXT NULL,
+  result_image_url VARCHAR(1024) NULL,
+  video_url VARCHAR(1024) NULL,
+  process_images JSON NULL,
+  status ENUM('PENDING', 'PROCESSING', 'SUCCEEDED', 'FAILED') NOT NULL DEFAULT 'PENDING',
+  error_message VARCHAR(500) NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_effect_logs_public_id (public_id),
+  KEY idx_effect_logs_effect (effect_id),
+  KEY idx_effect_logs_user (user_id),
+  CONSTRAINT fk_effect_logs_effect FOREIGN KEY (effect_id) REFERENCES effects(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
