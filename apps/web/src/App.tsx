@@ -1,8 +1,10 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Socket } from 'socket.io-client';
-import { ChatMessage, connectSocket, ensureSession, Persona, request, Room } from './api';
+import { ChatMessage, connectSocket, ensureSession, Persona, request, Room, uuid } from './api';
+import { EffectsPage, EffectsManagePage } from './EffectsPage';
+import { CameraPage } from './CameraPage';
 
-type View = 'LOBBY' | 'PERSONAS' | 'CHAT';
+type View = 'LOBBY' | 'PERSONAS' | 'CHAT' | 'EFFECTS' | 'EFFECTS_MANAGE' | 'CAMERA';
 type Mission = { publicId: string; text: string; status: string; type: 'CONFLICT' | 'COMEDY' | 'COOPERATIVE'; rewardPoints: number; isNew: boolean };
 type Rule = { id: string; key: string; rule: string; endsAt: number };
 type ScoreEntry = { memberId: number; nickname: string; score: number };
@@ -101,14 +103,17 @@ export function App() {
 
   return <>
     {error && <button className="error-toast" onClick={() => setError('')}>{error} ×</button>}
-    {view === 'LOBBY' && <Lobby rooms={rooms} personas={personas.filter(p => p.enabled)} selected={selectedPersona} onSelect={switchPersona} onEnter={enterRoom} onCreate={async room => { await refresh(); await enterRoom(room); }} onManage={() => setView('PERSONAS')} />}
+    {view === 'LOBBY' && <Lobby rooms={rooms} personas={personas.filter(p => p.enabled)} selected={selectedPersona} onSelect={switchPersona} onEnter={enterRoom} onCreate={async room => { await refresh(); await enterRoom(room); }} onManage={() => setView('PERSONAS')} onEffects={() => setView('EFFECTS')} onCamera={() => setView('CAMERA')} />}
     {view === 'PERSONAS' && <PersonaManager personas={personas} onBack={() => { refresh(); setView('LOBBY'); }} onChanged={refresh} />}
+    {view === 'EFFECTS' && <EffectsPage onBack={() => setView('LOBBY')} onManage={() => setView('EFFECTS_MANAGE')} />}
+    {view === 'EFFECTS_MANAGE' && <EffectsManagePage onBack={() => setView('EFFECTS')} />}
+    {view === 'CAMERA' && <CameraPage onBack={() => setView('LOBBY')} />}
     {view === 'CHAT' && room && selectedPersona && socket && <Chat room={room} persona={selectedPersona} personas={personas.filter(p => p.enabled)} messages={messages} memberId={memberId} socket={socket} chaos={chaos} mission={mission} rules={rules} now={now} leaderboard={leaderboard} onClaim={claimMission} onSwitch={switchPersona} onLeave={() => { setView('LOBBY'); setRoom(null); refresh(); }} onError={setError} />}
     {showMission && mission && <MissionOverlay mission={mission} onClose={() => setShowMission(false)} />}
   </>;
 }
 
-function Lobby({ rooms, personas, selected, onSelect, onEnter, onCreate, onManage }: { rooms: Room[]; personas: Persona[]; selected?: Persona; onSelect: (id: string) => void; onEnter: (room: Room) => void; onCreate: (room: Room) => void; onManage: () => void }) {
+function Lobby({ rooms, personas, selected, onSelect, onEnter, onCreate, onManage, onEffects, onCamera }: { rooms: Room[]; personas: Persona[]; selected?: Persona; onSelect: (id: string) => void; onEnter: (room: Room) => void; onCreate: (room: Room) => void; onManage: () => void; onEffects: () => void; onCamera: () => void }) {
   const [code, setCode] = useState('');
   const [showCreate, setShowCreate] = useState(false);
   async function search(event: FormEvent) {
@@ -117,7 +122,7 @@ function Lobby({ rooms, personas, selected, onSelect, onEnter, onCreate, onManag
     onEnter(room);
   }
   return <main className="page lobby">
-    <header className="top"><div className="brand"><i>离</i>离谱聊天室</div><button className="link-btn" onClick={onManage}>人物管理 ↗</button></header>
+    <header className="top"><div className="brand"><i>离</i>离谱聊天室</div><div style={{display:'flex', gap:'8px'}}><button className="link-btn" onClick={onCamera}>拍照 ↗</button><button className="link-btn" onClick={onEffects}>特效 ↗</button><button className="link-btn" onClick={onManage}>人物管理 ↗</button></div></header>
     <section className="hero"><div><span className="sticker">REALTIME IDENTITY CHAOS</span><h1>换个人格<br/><em>再开口。</em></h1></div><form className="join-box" onSubmit={search}><b>输入房间 ID</b><div><input value={code} onChange={e => setCode(e.target.value.replace(/[^a-zA-Z0-9]/g, '').slice(0, 8))} placeholder="8 位字母和数字" required minLength={8}/><button>加入</button></div><small>房间空置 5 分钟后会自动销毁</small></form></section>
     <section className="persona-strip"><div className="section-title"><h2>今天用谁说话？</h2><span>聊天室内也可以随时换</span></div><div className="persona-row">{personas.map(persona => <button key={persona.publicId} className={selected?.publicId === persona.publicId ? 'persona active' : 'persona'} style={{ '--c': persona.visual?.color || '#c7ff00' } as React.CSSProperties} onClick={() => onSelect(persona.publicId)}><i>{persona.visual?.symbol || persona.name[0]}</i><strong>{persona.name}</strong><span>{persona.shortDescription}</span></button>)}</div></section>
     <section className="rooms"><div className="section-title"><h2>正在发生</h2><button className="solid-btn" onClick={() => setShowCreate(true)}>＋ 创建聊天室</button></div><div className="room-grid">{rooms.map(item => <button className="room" key={item.code} onClick={() => onEnter(item)}><div><small>{item.type === 'THEME' ? '主题任务局' : '自由聊天'}</small><code>{item.code}</code></div><h3>{item.name}</h3><span>{item.status === 'EMPTY_GRACE' ? '销毁倒计时中 · 进去即可抢救' : '点击加入 →'}</span></button>)}{!rooms.length && <div className="empty">现在一个房间都没有。很好，你可以成为第一个发疯的人。</div>}</div></section>
@@ -140,7 +145,7 @@ function Chat({ room, persona, personas, messages, memberId, socket, chaos, miss
     const originalText = input.trim(); if (!originalText || busy) return;
     setBusy(true);
     try {
-      await emitAck(socket, 'message:transform', { originalText, clientMessageId: crypto.randomUUID() });
+      await emitAck(socket, 'message:transform', { originalText, clientMessageId: uuid() });
       setInput('');
     } catch (err) { onError(err instanceof Error ? err.message : '发送失败'); } finally { setBusy(false); }
   }

@@ -1,6 +1,6 @@
 import { io, Socket } from 'socket.io-client';
 
-export const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+export const API_URL = import.meta.env.VITE_API_URL || '';
 
 export type Persona = {
   publicId: string;
@@ -50,5 +50,13 @@ export async function ensureSession() {
 
 export function connectSocket(): Socket {
   return io(API_URL, { transports: ['websocket'], auth: { token: localStorage.getItem('lipu-token') } });
+}
+
+export function uuid(): string {
+  try { return crypto.randomUUID(); } catch { /* fallback for non-HTTPS */ }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+    const r = (Math.random() * 16) | 0;
+    return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
+  });
 }
 
