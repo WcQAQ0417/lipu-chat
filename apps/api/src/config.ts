@@ -18,6 +18,13 @@ export const config = {
     timeoutMs: Number(process.env.LLM_TIMEOUT_MS || 12000),
     mock: process.env.LLM_MOCK_MODE === 'true' || !process.env.LLM_API_KEY,
   },
+  tokendance: {
+    apiKey: process.env.TOKENDANCE_API_KEY || '',
+    imageModel: process.env.TOKENDANCE_IMAGE_MODEL || 'seedream-5.0-lite',
+    baseUrl: 'https://tokendance.space/gateway/v1',
+    enabled: !!process.env.TOKENDANCE_API_KEY,
+  },
+  uploadDir: process.env.UPLOAD_DIR || './uploads',
   roomEmptyTtlSeconds: Number(process.env.ROOM_EMPTY_TTL_SECONDS || 300),
 };
 
