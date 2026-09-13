@@ -1,0 +1,122 @@
+name: lipu-chat
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    container_name: lipu-api
+    restart: unless-stopped
+    environment:
+      PORT: 3000
+      PUBLIC_WEB_ORIGIN: http://localhost:8080,http://localhost:5173
+      JWT_ACCESS_SECRET: lipu-chat-jwt-secret-2026
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_DATABASE: lipu_chat
+      MYSQL_USER: lipu
+      MYSQL_PASSWORD: lipu_dev_password
+      REDIS_URL: redis://redis:6379
+      REDIS_PASSWORD: lipu_redis_dev_password
+      ROOM_EMPTY_TTL_SECONDS: 300
+      LLM_BASE_URL: https://api.openai.com/v1
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ''
+      LLM_TIMEOUT_MS: 12000
+      LLM_MOCK_MODE: 'true'
+      TOKENDANCE_API_KEY: ${TOKENDANCE_API_KEY:-}
+      TOKENDANCE_IMAGE_MODEL: seedream-5.0-lite
+      NODE_TLS_REJECT_UNAUTHORIZED: '0'  # 开发环境跳过 SSL 证书验证
+    extra_hosts:
+      - "tokendance.space:47.97.84.111"
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - ./uploads/effects:/app/uploads/effects
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    networks: [lipu_net]
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        VITE_API_URL: ""
+    container_name: lipu-web
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    volumes:
+      - ./uploads/effects:/usr/share/nginx/html/uploads/effects
+    networks: [lipu_net]
+
+  mysql:
+    image: mysql:8.4
+    container_name: lipu-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: lipu_chat
+      MYSQL_USER: lipu
+      MYSQL_PASSWORD: lipu_dev_password
+      MYSQL_ROOT_PASSWORD: lipu_root_dev_password
+      TZ: Asia/Shanghai
+    ports:
+      - "127.0.0.1:3306:3306"
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --default-time-zone=+08:00
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./infra/mysql/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    networks: [lipu_net]
+
+  redis:
+    image: redis:8.2-alpine
+    container_name: lipu-redis
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: lipu_redis_dev_password
+      TZ: Asia/Shanghai
+    ports:
+      - "127.0.0.1:6379:6379"
+    command:
+      - sh
+      - -c
+      - exec redis-server /usr/local/etc/redis/redis.conf --requirepass "$${REDIS_PASSWORD}"
+    volumes:
+      - redis_data:/data
+      - ./infra/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping | grep PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [lipu_net]
+
+volumes:
+  mysql_data:
+  redis_data:
+
+networks:
+  lipu_net:
+    driver: bridge

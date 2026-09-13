@@ -1,0 +1,11 @@
+{
+  "name": "lipu-chat",
+  "private": true,
+  "workspaces": ["apps/*"],
+  "scripts": {
+    "dev": "npm run dev -w @lipu/api & npm run dev -w @lipu/web",
+    "build": "npm run build -w @lipu/api && npm run build -w @lipu/web",
+    "start:api": "npm run start -w @lipu/api",
+    "smoke": "node scripts/smoke-test.mjs"
+  }
+}
