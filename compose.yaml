@@ -20,7 +20,7 @@ services:
       REDIS_PASSWORD: lipu_redis_dev_password
       ROOM_EMPTY_TTL_SECONDS: 300
       LLM_BASE_URL: https://api.openai.com/v1
-      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_API_KEY: "${LLM_API_KEY:-}"
       LLM_MODEL: ''
       LLM_TIMEOUT_MS: 12000
       LLM_MOCK_MODE: 'true'
