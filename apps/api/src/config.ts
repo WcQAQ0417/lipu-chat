@@ -21,6 +21,7 @@ export const config = {
   tokendance: {
     apiKey: process.env.TOKENDANCE_API_KEY || '',
     imageModel: process.env.TOKENDANCE_IMAGE_MODEL || 'seedream-5.0-lite',
+    videoModel: process.env.TOKENDANCE_VIDEO_MODEL || 'kling-3.0',
     baseUrl: 'https://tokendance.space/gateway/v1',
     enabled: !!process.env.TOKENDANCE_API_KEY,
   },
