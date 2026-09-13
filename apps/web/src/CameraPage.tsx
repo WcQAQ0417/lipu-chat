@@ -149,6 +149,11 @@ export function CameraPage({ onBack }: { onBack: () => void }) {
   const startCamera = useCallback(async () => {
     setCameraError('');
     setCameraReady(false);
+    // HTTP 下 navigator.mediaDevices 是 undefined（浏览器安全限制）
+    if (typeof navigator.mediaDevices === 'undefined' || typeof navigator.mediaDevices.getUserMedia === 'undefined') {
+      setCameraError('摄像头需要 HTTPS 或 localhost 环境。当前页面为 HTTP，浏览器禁止非安全上下文访问摄像头。请用 localhost 访问或配置 HTTPS。');
+      return;
+    }
     try {
       const s = await navigator.mediaDevices.getUserMedia({
         video: { facingMode, width: { ideal: 1280 }, height: { ideal: 720 } },
