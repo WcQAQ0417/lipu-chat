@@ -7,6 +7,8 @@ import { config } from './config';
 
 const ROOM_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
 
+export type RoomRecord = { id: number; code: string; name: string; type: string; status: string; maxMembers: number };
+
 @Injectable()
 export class RoomService {
   constructor(private readonly db: DbService, private readonly redis: RedisService) {}
@@ -19,11 +21,15 @@ export class RoomService {
     return rows.map(row => ({ code: row.room_code, name: row.name, type: row.room_type, status: row.status, maxMembers: row.max_members }));
   }
 
-  async find(code: string) {
-    const normalized = code.toUpperCase();
-    const rows = await this.db.rows<RowDataPacket[]>('SELECT * FROM rooms WHERE room_code=? LIMIT 1', [normalized]);
+  async find(code: string): Promise<RoomRecord> {
+    const normalized = String(code || '').trim().toUpperCase();
+    const rows = await this.db.rows<RowDataPacket[]>(
+      'SELECT id,room_code,name,room_type,status,max_members FROM rooms WHERE room_code=? LIMIT 1',
+      [normalized],
+    );
     if (!rows.length || rows[0].status === 'DESTROYED') throw new NotFoundException('没有找到可加入的房间');
-    return rows[0];
+    const row = rows[0];
+    return { id: Number(row.id), code: row.room_code, name: row.name, type: row.room_type, status: row.status, maxMembers: row.max_members };
   }
 
   async create(userId: number, input: { name?: string; type?: string }) {
@@ -45,7 +51,7 @@ export class RoomService {
     throw new BadRequestException('房间 ID 生成冲突，请重试');
   }
 
-  async join(room: RowDataPacket, userId: number, personaPublicId: string) {
+  async join(room: RoomRecord, userId: number, personaPublicId: string) {
     const personas = await this.db.rows<RowDataPacket[]>(
       'SELECT id,public_id,name,version,enabled FROM personas WHERE public_id=? AND deleted_at IS NULL LIMIT 1',
       [personaPublicId],

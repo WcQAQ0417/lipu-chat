@@ -54,17 +54,17 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const data = client.data as SocketData;
       const room = await this.rooms.find(body.roomCode);
       const joined = await this.rooms.join(room, data.uid, body.personaId);
-      Object.assign(data, { roomId: Number(room.id), roomCode: room.room_code, memberId: joined.memberId });
+      Object.assign(data, { roomId: room.id, roomCode: room.code, memberId: joined.memberId });
       await client.join(`room:${room.id}`);
       await this.redis.client.sAdd(`room:${room.id}:presence`, String(joined.memberId));
       await this.redis.client.sAdd(`room:${room.id}:member:${joined.memberId}:sockets`, client.id);
       await this.redis.client.expire(`room:${room.id}:member:${joined.memberId}:sockets`, 600);
-      const mission = room.room_type === 'THEME' ? await this.game.assignMission(Number(room.id), joined.memberId) : null;
-      const chaos = await this.game.currentChaos(Number(room.id));
-      const leaderboard = await this.game.leaderboard(Number(room.id));
-      const messages = await this.loadMessages(Number(room.id));
+      const mission = room.type === 'THEME' ? await this.game.assignMission(room.id, joined.memberId) : null;
+      const chaos = await this.game.currentChaos(room.id);
+      const leaderboard = await this.game.leaderboard(room.id);
+      const messages = await this.loadMessages(room.id);
       client.to(`room:${room.id}`).emit('member:joined', { memberId: joined.memberId, nickname: data.nickname, personaName: joined.persona.name });
-      return { ok: true, room: { code: room.room_code, name: room.name, type: room.room_type }, memberId: joined.memberId, mission, chaos, leaderboard, messages };
+      return { ok: true, room: { code: room.code, name: room.name, type: room.type }, memberId: joined.memberId, mission, chaos, leaderboard, messages };
     } catch (error: any) { throw new WsException(error?.message || '加入房间失败'); }
   }
 
