@@ -75,7 +75,7 @@ export function App() {
   }, [rules.length]);
 
   async function enterRoom(target: Room) {
-    if (!socket || !selectedPersona) return;
+    if (!socket || !selectedPersona) { setError('连接未就绪或未选择人物，请稍后重试'); return; }
     setError('');
     try {
       const result = await emitAck<{ ok: boolean; room: Room; memberId: number; mission: Mission | null; chaos: { value: number; activeRules: Rule[] }; leaderboard: ScoreEntry[]; messages: ChatMessage[] }>(socket, 'room:join', { roomCode: target.code, personaId: selectedPersona.publicId });
@@ -103,7 +103,7 @@ export function App() {
 
   return <>
     {error && <button className="error-toast" onClick={() => setError('')}>{error} ×</button>}
-    {view === 'LOBBY' && <Lobby rooms={rooms} personas={personas.filter(p => p.enabled)} selected={selectedPersona} onSelect={switchPersona} onEnter={enterRoom} onCreate={async room => { await refresh(); await enterRoom(room); }} onManage={() => setView('PERSONAS')} onEffects={() => setView('EFFECTS')} onCamera={() => setView('CAMERA')} />}
+    {view === 'LOBBY' && <Lobby rooms={rooms} personas={personas.filter(p => p.enabled)} selected={selectedPersona} onSelect={switchPersona} onEnter={enterRoom} onCreate={async room => { await refresh(); await enterRoom(room); }} onManage={() => setView('PERSONAS')} onEffects={() => setView('EFFECTS')} onCamera={() => setView('CAMERA')} onError={setError} />}
     {view === 'PERSONAS' && <PersonaManager personas={personas} onBack={() => { refresh(); setView('LOBBY'); }} onChanged={refresh} />}
     {view === 'EFFECTS' && <EffectsPage onBack={() => setView('LOBBY')} onManage={() => setView('EFFECTS_MANAGE')} />}
     {view === 'EFFECTS_MANAGE' && <EffectsManagePage onBack={() => setView('EFFECTS')} />}
@@ -113,13 +113,16 @@ export function App() {
   </>;
 }
 
-function Lobby({ rooms, personas, selected, onSelect, onEnter, onCreate, onManage, onEffects, onCamera }: { rooms: Room[]; personas: Persona[]; selected?: Persona; onSelect: (id: string) => void; onEnter: (room: Room) => void; onCreate: (room: Room) => void; onManage: () => void; onEffects: () => void; onCamera: () => void }) {
+function Lobby({ rooms, personas, selected, onSelect, onEnter, onCreate, onManage, onEffects, onCamera, onError }: { rooms: Room[]; personas: Persona[]; selected?: Persona; onSelect: (id: string) => void; onEnter: (room: Room) => void; onCreate: (room: Room) => void; onManage: () => void; onEffects: () => void; onCamera: () => void; onError: (value: string) => void }) {
   const [code, setCode] = useState('');
   const [showCreate, setShowCreate] = useState(false);
   async function search(event: FormEvent) {
     event.preventDefault();
-    const room = await request<Room>(`/api/rooms/${code.trim().toUpperCase()}`);
-    onEnter(room);
+    onError('');
+    try {
+      const room = await request<Room>(`/api/rooms/${code.trim().toUpperCase()}`);
+      onEnter(room);
+    } catch (err) { onError(err instanceof Error ? err.message : '加入房间失败'); }
   }
   return <main className="page lobby">
     <header className="top"><div className="brand"><i>离</i>离谱聊天室</div><div style={{display:'flex', gap:'8px'}}><button className="link-btn" onClick={onCamera}>拍照 ↗</button><button className="link-btn" onClick={onEffects}>特效 ↗</button><button className="link-btn" onClick={onManage}>人物管理 ↗</button></div></header>
